@@ -1,6 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { createClient } from '@/utils/supabase/client';
 import { 
   Plus, 
   MessageSquare, 
@@ -12,11 +14,192 @@ import {
   Syringe,
   Calendar,
   Settings,
-  Search
+  Search,
+  Trash2
 } from 'lucide-react';
 
 export default function DashboardPage() {
+  const router = useRouter();
+  const supabase = createClient();
+  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [userData, setUserData] = useState<any>(null);
+  
+  // Chat state
   const [query, setQuery] = useState('');
+  const [messages, setMessages] = useState<{role: 'user'|'assistant', text: string}[]>([]);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+
+  // Conversations state
+  const [recentConversations, setRecentConversations] = useState<any[]>([]);
+
+  useEffect(() => {
+    const checkUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        router.push('/'); // Redirect to login page if not authenticated
+      } else {
+        const fullUser = { ...user.user_metadata, id: user.id, phone: user.phone || user.user_metadata?.phone };
+        setUserData(fullUser);
+        setLoadingAuth(false);
+        fetchConversations(fullUser.phone || fullUser.id);
+      }
+    };
+    checkUser();
+  }, [router, supabase]);
+
+  const fetchConversations = async (userId: string) => {
+    try {
+      const res = await fetch(`/api/conversations?user=${encodeURIComponent(userId)}`);
+      const data = await res.json();
+      if (res.ok && data.data) {
+        setRecentConversations(data.data);
+      }
+    } catch (e) {
+      console.error('Failed to fetch conversations', e);
+    }
+  };
+
+  const loadConversation = async (convId: string) => {
+    if (!userData) return;
+    setConversationId(convId);
+    setIsChatLoading(true);
+    try {
+      const res = await fetch(`/api/messages?user=${encodeURIComponent(userData.phone || userData.id || 'anonymous_user')}&conversation_id=${encodeURIComponent(convId)}`);
+      const data = await res.json();
+      if (res.ok && data.data) {
+        // Dify returns messages in descending order (newest first usually), we need ascending
+        const sortedMessages = data.data.reverse();
+        const formattedMessages: {role: 'user'|'assistant', text: string}[] = [];
+        for (const msg of sortedMessages) {
+          formattedMessages.push({ role: 'user', text: msg.query });
+          formattedMessages.push({ role: 'assistant', text: msg.answer });
+        }
+        setMessages(formattedMessages);
+      }
+    } catch (e) {
+      console.error('Failed to load conversation', e);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
+  const startNewConversation = () => {
+    setConversationId(null);
+    setMessages([]);
+  };
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    router.push('/');
+  };
+
+  const handleDeleteConversation = async (e: React.MouseEvent, convId: string) => {
+    e.stopPropagation();
+    if (!confirm('Are you sure you want to delete this conversation?')) return;
+    
+    try {
+      const res = await fetch('/api/conversations', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversationId: convId,
+          user: userData?.phone || userData?.id || 'anonymous_user'
+        })
+      });
+      
+      if (res.ok) {
+        if (conversationId === convId) {
+          startNewConversation();
+        }
+        fetchConversations(userData?.phone || userData?.id || 'anonymous_user');
+      } else {
+        const errorData = await res.json();
+        alert(`Failed to delete conversation: ${errorData.error}`);
+      }
+    } catch (err) {
+      console.error('Error deleting conversation', err);
+      alert('An error occurred while deleting the conversation.');
+    }
+  };
+
+  const handleSendMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!query.trim() || isChatLoading) return;
+
+    const userMessage = query.trim();
+    setQuery('');
+    setMessages((prev) => [...prev, { role: 'user', text: userMessage }]);
+    setIsChatLoading(true);
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: userMessage,
+          userData: userData,
+          conversationId: conversationId
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setMessages((prev) => [...prev, { role: 'assistant', text: data.answer }]);
+        if (data.conversation_id && !conversationId) {
+          setConversationId(data.conversation_id);
+          // Refresh conversations list to show the new one
+          if (userData) {
+            fetchConversations(userData.phone || userData.id || 'anonymous_user');
+          }
+        }
+      } else {
+        setMessages((prev) => [...prev, { role: 'assistant', text: 'Error: ' + (data.error || 'Failed to connect to assistant') }]);
+      }
+    } catch (err) {
+      setMessages((prev) => [...prev, { role: 'assistant', text: 'An unexpected error occurred.' }]);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
+  const renderAssistantMessage = (text: string, isFirst: boolean) => {
+    try {
+      // Try to parse the text as JSON
+      let cleanText = text;
+      if (typeof text === 'string') {
+          cleanText = text.replace(/```json\n?/, '').replace(/```\n?$/, '').trim();
+      }
+      const data = JSON.parse(cleanText);
+      
+      // If it's a JSON response with patient details
+      if (isFirst || data.name || data.pregnancy_week || data.health_condition) {
+        return (
+          <div className="structured-response">
+            <div className="structured-data-box">
+              <div className="data-row"><strong>Name:</strong> {data.name || userData?.full_name || 'N/A'}</div>
+              <div className="data-row"><strong>Age:</strong> {data.age || userData?.age || 'N/A'}</div>
+              <div className="data-row"><strong>Pregnancy Week:</strong> {data.pregnancy_week || userData?.pregnancy_week || 'N/A'}</div>
+              <div className="data-row"><strong>Health Condition:</strong> {data.health_condition || userData?.health_conditions || 'None'}</div>
+              <div className="data-row"><strong>Diet Type:</strong> {data.diet_type || userData?.diet_type || 'N/A'}</div>
+            </div>
+            <div className="structured-text" dangerouslySetInnerHTML={{ __html: (data.response || data.answer || '').replace(/\n/g, '<br/>') }} />
+          </div>
+        );
+      } else {
+        // If it's JSON but only contains the response
+        return <div dangerouslySetInnerHTML={{ __html: (data.response || data.answer || cleanText).replace(/\n/g, '<br/>') }} />;
+      }
+    } catch (e) {
+      // Fallback for plain text
+      return <div dangerouslySetInnerHTML={{ __html: text.replace(/\n/g, '<br/>') }} />;
+    }
+  };
+
+  if (loadingAuth) {
+    return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', fontFamily: 'system-ui' }}>Authenticating...</div>;
+  }
 
   return (
     <div className="layout">
@@ -31,35 +214,58 @@ export default function DashboardPage() {
           <div className="profile-header">
             <div className="avatar">🌿</div>
             <div className="info">
-              <h3>Anjali Mehta</h3>
-              <p>Week 8 • 1st Trimester</p>
+              <h3>{userData?.full_name || 'Anjali Mehta'}</h3>
+              {userData?.age && <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>Age: {userData.age}</p>}
+              <p>
+                {userData?.pregnancy_week ? `Week ${userData.pregnancy_week} • ` : ''}
+                {userData?.trimester ? userData.trimester.replace('_', ' ') : '1st Trimester'}
+              </p>
             </div>
           </div>
           <div className="tags">
-            <span>Morning sickness</span>
-            <span>PCOS history</span>
-            <span>IVF pregnancy</span>
+            {userData?.health_conditions && userData.health_conditions.split(',').map((cond: string, i: number) => (
+              <span key={i}>{cond.trim()}</span>
+            ))}
+            {userData?.diet_type && <span>{userData.diet_type}</span>}
+            {!userData?.health_conditions && !userData?.diet_type && (
+              <>
+                <span>Morning sickness</span>
+                <span>PCOS history</span>
+                <span>IVF pregnancy</span>
+              </>
+            )}
           </div>
         </div>
 
-        <button className="new-thread">
+        <button className="new-thread" onClick={startNewConversation}>
           <Plus size={18} />
           New Conversation
         </button>
 
         <div className="nav-group">
           <label>RECENT CHATS</label>
-          <div className="nav-item active">
-            <MessageSquare size={16} />
-            <span>Nutrition & Iron supplements</span>
-          </div>
-          <div className="nav-item">
-            <MessageSquare size={16} />
-            <span>Baby movement patterns</span>
-          </div>
-          <div className="nav-item">
-            <MessageSquare size={16} />
-            <span>Hospital bag checklist</span>
+          <div className="recent-chats-list">
+            {recentConversations.length > 0 ? recentConversations.map((conv) => (
+              <div 
+                key={conv.id} 
+                className={`nav-item ${conversationId === conv.id ? 'active' : ''}`}
+                onClick={() => loadConversation(conv.id)}
+              >
+                <MessageSquare size={16} />
+                <span className="truncate" style={{ flex: 1 }}>{conv.name || 'New Conversation'}</span>
+                <button 
+                  className="delete-conv-btn"
+                  onClick={(e) => handleDeleteConversation(e, conv.id)}
+                  title="Delete Conversation"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            )) : (
+              <div className="nav-item" style={{ pointerEvents: 'none', opacity: 0.5 }}>
+                <span>No recent chats</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -67,12 +273,12 @@ export default function DashboardPage() {
           <div className="mini-profile">
             <div className="mini-avatar">🌿</div>
             <div className="mini-info">
-              <h4>Anjali Mehta</h4>
-              <p>Week 8</p>
+              <h4>{userData?.full_name || 'Anjali Mehta'}</h4>
+              <p>{userData?.pregnancy_week ? `Week ${userData.pregnancy_week}` : 'Week 8'}</p>
             </div>
           </div>
           <div className="footer-actions">
-            <button className="icon-btn"><LogOut size={16} /></button>
+            <button className="icon-btn" onClick={handleSignOut} title="Sign Out"><LogOut size={16} /></button>
           </div>
         </div>
       </aside>
@@ -95,59 +301,81 @@ export default function DashboardPage() {
         </header>
 
         <div className="view">
-          <div className="hero">
-            <div className="hero-icon">🌿</div>
-            <h1>Hello, Anjali!</h1>
-            <p className="hero-text">
-              I'm your personalized maternity assistant, adapted for your journey.<br />
-              You're at <strong>Week 8</strong> — all my guidance is tailored to your profile.
-            </p>
+          {messages.length === 0 ? (
+            <div className="hero">
+              <div className="hero-icon">🌿</div>
+              <h1>Hello, {userData?.full_name ? userData.full_name.split(' ')[0] : 'Anjali'}!</h1>
+              <p className="hero-text">
+                I'm your personalized maternity assistant, adapted for your journey.<br />
+                {userData?.pregnancy_week ? (
+                  <>You're at <strong>Week {userData.pregnancy_week}</strong> — all my guidance is tailored to your profile.</>
+                ) : (
+                  <>You're at <strong>Week 8</strong> — all my guidance is tailored to your profile.</>
+                )}
+              </p>
 
-            <div className="cards">
-              <div className="card">
-                <div className="card-top" style={{ color: '#2e7d32' }}>
-                  <Thermometer size={20} />
+              <div className="cards">
+                <div className="card">
+                  <div className="card-top" style={{ color: '#2e7d32' }}>
+                    <Thermometer size={20} />
+                  </div>
+                  <h3>Nausea Relief</h3>
+                  <p>Managing morning sickness safely</p>
                 </div>
-                <h3>Nausea Relief</h3>
-                <p>Managing morning sickness safely</p>
+                <div className="card">
+                  <div className="card-top" style={{ color: '#1976d2' }}>
+                    <Syringe size={20} />
+                  </div>
+                  <h3>IVF Guidance</h3>
+                  <p>Specific care for IVF pregnancies</p>
+                </div>
+                <div className="card">
+                  <div className="card-top" style={{ color: '#673ab7' }}>
+                    <Calendar size={20} />
+                  </div>
+                  <h3>Milestones</h3>
+                  <p>{userData?.pregnancy_week ? `Week ${userData.pregnancy_week}` : 'Week 8'} scans and what to expect</p>
+                </div>
               </div>
-              <div className="card">
-                <div className="card-top" style={{ color: '#1976d2' }}>
-                  <Syringe size={20} />
-                </div>
-                <h3>IVF Guidance</h3>
-                <p>Specific care for IVF pregnancies</p>
-              </div>
-              <div className="card">
-                <div className="card-top" style={{ color: '#673ab7' }}>
-                  <Calendar size={20} />
-                </div>
-                <h3>Milestones</h3>
-                <p>Week 8 scans and what to expect</p>
+
+              <div className="suggestions">
+                <button onClick={() => setQuery('How to manage morning sickness?')}>How to manage morning sickness?</button>
+                <button onClick={() => setQuery('Is spotting normal at week 8?')}>Is spotting normal at week 8?</button>
+                <button onClick={() => setQuery('IVF pregnancy precautions')}>IVF pregnancy precautions</button>
+                <button onClick={() => setQuery('When is my first scan due?')}>When is my first scan due?</button>
               </div>
             </div>
-
-            <div className="suggestions">
-              <button>How to manage morning sickness?</button>
-              <button>Is spotting normal at week 8?</button>
-              <button>IVF pregnancy precautions</button>
-              <button>When is my first scan due?</button>
+          ) : (
+            <div className="chat-history">
+              {messages.map((msg, idx) => (
+                <div key={idx} className={`chat-message ${msg.role}`}>
+                  <div className="message-content">
+                    {msg.role === 'assistant' ? renderAssistantMessage(msg.text, idx === 1) : msg.text}
+                  </div>
+                </div>
+              ))}
+              {isChatLoading && (
+                <div className="chat-message assistant">
+                  <div className="message-content loading">...</div>
+                </div>
+              )}
             </div>
-          </div>
+          )}
         </div>
 
         <footer className="chat-dock">
-          <div className="input-box">
+          <form className="input-box" onSubmit={handleSendMessage}>
             <input 
               type="text" 
               placeholder="Ask anything about your pregnancy..." 
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              disabled={isChatLoading}
             />
-            <button className={`send-btn ${query ? 'ready' : ''}`}>
+            <button type="submit" className={`send-btn ${query && !isChatLoading ? 'ready' : ''}`} disabled={isChatLoading || !query}>
               <Send size={20} />
             </button>
-          </div>
+          </form>
           <div className="legal">
             <Info size={12} />
             <span>For informational purposes only. Always consult your doctor.</span>
@@ -240,8 +468,12 @@ export default function DashboardPage() {
           gap: 10px;
           margin-bottom: 40px;
           box-shadow: 0 4px 12px rgba(184, 102, 122, 0.2);
+          cursor: pointer;
+          transition: transform 0.2s;
         }
+        .new-thread:active { transform: scale(0.98); }
 
+        .nav-group { flex: 1; overflow-y: auto; }
         .nav-group label {
           font-size: 11px;
           font-weight: 700;
@@ -249,6 +481,12 @@ export default function DashboardPage() {
           letter-spacing: 0.1em;
           margin-bottom: 16px;
           display: block;
+        }
+        
+        .recent-chats-list {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
         }
 
         .nav-item {
@@ -265,6 +503,28 @@ export default function DashboardPage() {
 
         .nav-item:hover { background: #fdf5f6; }
         .nav-item.active { background: #fdf1f3; color: var(--accent-primary); font-weight: 600; }
+        .truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+
+        .delete-conv-btn {
+          background: transparent;
+          border: none;
+          color: #d32f2f;
+          cursor: pointer;
+          opacity: 0;
+          transition: opacity 0.2s;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 4px;
+        }
+        
+        .nav-item:hover .delete-conv-btn {
+          opacity: 0.7;
+        }
+        
+        .delete-conv-btn:hover {
+          opacity: 1 !important;
+        }
 
         .sidebar-footer {
           margin-top: auto;
@@ -380,8 +640,77 @@ export default function DashboardPage() {
           border-radius: 30px;
           font-size: 14px;
           color: var(--text-main);
+          cursor: pointer;
         }
         .suggestions button:hover { border-color: var(--accent-primary); color: var(--accent-primary); background: #fff5f7; }
+
+        .chat-history {
+          width: 100%;
+          max-width: 840px;
+          display: flex;
+          flex-direction: column;
+          gap: 24px;
+        }
+
+        .chat-message {
+          display: flex;
+          flex-direction: column;
+          max-width: 80%;
+        }
+
+        .chat-message.user {
+          align-self: flex-end;
+          align-items: flex-end;
+        }
+
+        .chat-message.assistant {
+          align-self: flex-start;
+          align-items: flex-start;
+        }
+
+        .message-content {
+          padding: 16px 20px;
+          border-radius: 20px;
+          font-size: 15px;
+          line-height: 1.5;
+        }
+
+        .chat-message.user .message-content {
+          background: var(--accent-primary);
+          color: white;
+          border-bottom-right-radius: 4px;
+        }
+
+        .chat-message.assistant .message-content {
+          background: white;
+          border: 1px solid #eee;
+          color: var(--text-main);
+          border-bottom-left-radius: 4px;
+          box-shadow: 0 4px 15px rgba(0,0,0,0.03);
+        }
+        
+        .structured-response { display: flex; flex-direction: column; gap: 16px; }
+        
+        .structured-data-box {
+          background: #f1f8e9;
+          border-radius: 12px;
+          padding: 16px;
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 12px;
+          font-size: 13px;
+          color: #2e7d32;
+        }
+        
+        .data-row {
+          display: flex;
+          gap: 8px;
+        }
+        
+        .data-row strong {
+          opacity: 0.8;
+          min-width: 120px;
+        }
 
         .chat-dock { padding: 0 48px 48px; background: linear-gradient(transparent, white 20%); }
         .input-box {
@@ -413,6 +742,9 @@ export default function DashboardPage() {
           display: flex;
           align-items: center;
           justify-content: center;
+          border: none;
+          cursor: pointer;
+          transition: background 0.2s;
         }
         .send-btn.ready { background: var(--accent-primary); }
 
