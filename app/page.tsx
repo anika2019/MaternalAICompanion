@@ -36,11 +36,11 @@ export default function LoginPage() {
           const icons = ['🌸', '🌿', '🌼', '🌙', '⭐'];
           
           const mergedProfiles = profilesData.map((p, index) => {
-            const mat = maternalData?.find(m => m.id === p.id) || ({} as any);
+            const mat = maternalData?.find(m => m.id === p.id);
             let status = 'Unknown Status';
-            if (mat.pregnancy_week && mat.trimester) {
+            if (mat && mat.pregnancy_week && mat.trimester) {
               status = `Week ${mat.pregnancy_week} • ${mat.trimester.replace('_', ' ')}`;
-            } else if (mat.trimester) {
+            } else if (mat && mat.trimester) {
               status = mat.trimester.replace('_', ' ');
             }
             
@@ -51,7 +51,7 @@ export default function LoginPage() {
               status: status,
               icon: icons[index % icons.length],
               color: colors[index % colors.length],
-              maternalInfo: mat // Storing full data in case needed
+              maternalInfo: mat || null // Storing full data in case needed
             };
           });
           setDynamicProfiles(mergedProfiles);
