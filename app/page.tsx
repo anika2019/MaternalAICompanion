@@ -36,7 +36,7 @@ export default function LoginPage() {
           const icons = ['🌸', '🌿', '🌼', '🌙', '⭐'];
           
           const mergedProfiles = profilesData.map((p, index) => {
-            const mat = maternalData?.find(m => m.id === p.id) || {};
+            const mat = maternalData?.find(m => m.id === p.id) || ({} as any);
             let status = 'Unknown Status';
             if (mat.pregnancy_week && mat.trimester) {
               status = `Week ${mat.pregnancy_week} • ${mat.trimester.replace('_', ' ')}`;
