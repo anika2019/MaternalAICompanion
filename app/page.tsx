@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { createClient } from '@/utils/supabase/client';
 import { signUpUser } from '@/app/actions/signup';
 import { useRouter } from 'next/navigation';
+import { normalizePhone } from '@/utils/phone';
 const PROFILES = [
   { id: 1, name: 'Priya Sharma', status: 'Week 24 • 2nd Trimester', icon: '🌸', color: '#fce4ec', phone: '+91 98765 00001' },
   { id: 2, name: 'Anjali Mehta', status: 'Week 8 • 1st Trimester', icon: '🌿', color: '#f1f8e9', phone: '+91 98765 00002' },
@@ -108,7 +109,8 @@ export default function LoginPage() {
     e.preventDefault();
     
     if (phoneNumber) {
-      const dummyEmail = `${phoneNumber.replace(/\D/g, '')}@dummy.com`;
+      const normalizedPhone = normalizePhone(phoneNumber);
+      const dummyEmail = `${normalizedPhone}@dummy.com`;
       const { data, error } = await supabase.auth.signInWithPassword({
         email: dummyEmail,
         password: 'DummyPassword123!@#',
@@ -175,6 +177,35 @@ export default function LoginPage() {
               <div className="toggle-auth" style={{ textAlign: 'center', marginTop: '16px', cursor: 'pointer', color: 'var(--accent-primary)', fontSize: '14px', fontWeight: '500' }}>
                 <span onClick={() => setAuthMode('signup')}>New user? Sign up</span>
               </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', color: '#d0c0bc', margin: '8px 0' }}>
+                <div style={{ flex: 1, height: '1px', background: '#eee' }}></div>
+                <span style={{ padding: '0 12px', fontSize: '12px', fontWeight: 500 }}>or ask anonymously</span>
+                <div style={{ flex: 1, height: '1px', background: '#eee' }}></div>
+              </div>
+
+              <Link 
+                href="/public-chat" 
+                className="secondary-btn"
+                style={{ 
+                  textAlign: 'center',
+                  padding: '14px',
+                  borderRadius: 'var(--radius-sm)',
+                  fontWeight: '600',
+                  textDecoration: 'none',
+                  fontSize: '14px',
+                  background: '#fdf5f6',
+                  color: 'var(--accent-primary)',
+                  border: '1px dashed var(--accent-primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                  transition: 'var(--transition)'
+                }}
+              >
+                <span>🌿</span> Try Guest Advice Chat
+              </Link>
             </div>
           </>
         ) : (
@@ -371,6 +402,12 @@ export default function LoginPage() {
           background: #a35568;
           transform: translateY(-2px);
           box-shadow: 0 6px 20px rgba(184, 102, 122, 0.3);
+        }
+
+        .secondary-btn:hover {
+          background: #fff0f2 !important;
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(184, 102, 122, 0.1);
         }
 
         .demo-footer {

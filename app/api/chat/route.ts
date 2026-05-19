@@ -24,11 +24,13 @@ export async function POST(req: Request) {
       pregnancy_week: userData?.pregnancy_week?.toString() || 'Not specified'
     };
 
+    const cleanPhone = userData?.phone ? userData.phone.replace(/[^a-zA-Z0-9_]/g, '') : undefined;
+
     const difyRequestPayload: any = {
       inputs: inputs,
       query: query,
       response_mode: 'blocking', // Use 'blocking' for a simple request/response, or 'streaming' for SSE
-      user: userData?.phone || userData?.id || 'anonymous_user', // Unique user ID
+      user: cleanPhone || userData?.id || 'anonymous_user', // Unique user ID
     };
 
     if (conversationId) {
