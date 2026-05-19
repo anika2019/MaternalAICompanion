@@ -17,6 +17,7 @@ import {
   Search,
   Trash2
 } from 'lucide-react';
+import { MATERNITY_INFO_CARDS } from '@/utils/maternityData';
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -39,10 +40,12 @@ export default function DashboardPage() {
       if (!user) {
         router.push('/'); // Redirect to login page if not authenticated
       } else {
-        const fullUser = { ...user.user_metadata, id: user.id, phone: user.phone || user.user_metadata?.phone };
+        const rawPhone = user?.phone || user?.user_metadata?.phone || user?.user_metadata?.phone_number;
+        const cleanPhone = rawPhone ? rawPhone.replace(/[^a-zA-Z0-9_]/g, '') : undefined;
+        const fullUser = { ...user?.user_metadata, id: user?.id, phone: cleanPhone };
         setUserData(fullUser);
         setLoadingAuth(false);
-        fetchConversations(fullUser.phone || fullUser.id);
+        fetchConversations(cleanPhone || user?.id || 'anonymous_user');
       }
     };
     checkUser();
@@ -123,12 +126,16 @@ export default function DashboardPage() {
     }
   };
 
-  const handleSendMessage = async (e?: React.FormEvent) => {
+  const handleSendMessage = async (e?: React.FormEvent, textToSubmit?: string) => {
     if (e) e.preventDefault();
-    if (!query.trim() || isChatLoading) return;
+    
+    const finalQuery = textToSubmit || query;
+    if (!finalQuery.trim() || isChatLoading) return;
 
-    const userMessage = query.trim();
-    setQuery('');
+    const userMessage = finalQuery.trim();
+    if (!textToSubmit) {
+      setQuery('');
+    }
     setMessages((prev) => [...prev, { role: 'user', text: userMessage }]);
     setIsChatLoading(true);
 
@@ -164,17 +171,110 @@ export default function DashboardPage() {
     }
   };
 
+  useEffect(() => {
+    if (!loadingAuth && userData) {
+      const pendingQuery = sessionStorage.getItem('pending_maternity_query');
+      if (pendingQuery) {
+        sessionStorage.removeItem('pending_maternity_query');
+        handleSendMessage(undefined, pendingQuery);
+      }
+    }
+  }, [loadingAuth, userData]);
+
+  const parseMarkdownToHtml = (markdownText: string): string => {
+    if (!markdownText) return '';
+    let html = markdownText;
+    
+    // Escape HTML to prevent XSS
+    html = html
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+
+    // Bold: **text** -> <strong>text</strong>
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    
+    // Italic: *text* -> <em>text</em>
+    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+    
+    // Handle list items (- item or * item)
+    const lines = html.split('\n');
+    let inList = false;
+    const processedLines = lines.map(line => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+        const content = trimmed.substring(2);
+        let prefix = '';
+        if (!inList) {
+          inList = true;
+          prefix = '<ul class="chat-list">';
+        }
+        return `${prefix}<li>${content}</li>`;
+      } else {
+        let suffix = '';
+        if (inList) {
+          inList = false;
+          suffix = '</ul>';
+        }
+        return `${suffix}${trimmed ? `<p>${trimmed}</p>` : '<br/>'}`;
+      }
+    });
+    
+    if (inList) {
+      processedLines.push('</ul>');
+    }
+    
+    return processedLines.join('');
+  };
+
   const renderAssistantMessage = (text: string, isFirst: boolean) => {
     try {
       // Try to parse the text as JSON
       let cleanText = text;
       if (typeof text === 'string') {
-          cleanText = text.replace(/```json\n?/, '').replace(/```\n?$/, '').trim();
+          cleanText = text.trim();
+          cleanText = cleanText.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
       }
       const data = JSON.parse(cleanText);
       
-      // If it's a JSON response with patient details
-      if (isFirst || data.name || data.pregnancy_week || data.health_condition) {
+      // 1. Check if it's the structured advice format
+      if (data.personalized_advice || data.greeting || data.safety_note || data.sources) {
+        return (
+          <div className="structured-advice-response">
+            {data.greeting && (
+              <div className="advice-greeting">
+                {data.greeting}
+              </div>
+            )}
+            {data.personalized_advice && (
+              <div 
+                className="advice-body" 
+                dangerouslySetInnerHTML={{ __html: parseMarkdownToHtml(data.personalized_advice) }} 
+              />
+            )}
+            {data.safety_note && (
+              <div className="advice-safety-card">
+                <span className="safety-icon">🩺</span>
+                <div className="safety-content">
+                  <strong>Safety Note:</strong> {data.safety_note}
+                </div>
+              </div>
+            )}
+            {data.sources && Array.isArray(data.sources) && data.sources.length > 0 && (
+              <div className="advice-sources">
+                <span className="sources-icon">📚</span>
+                <span><strong>Sources:</strong> {data.sources.join(', ')}</span>
+              </div>
+            )}
+          </div>
+        );
+      }
+      
+      // 2. Check if it's a JSON response with patient details
+      if (isFirst || data.name || data.pregnancy_week || data.health_condition || data.diet_type) {
+        const responseContent = data.response || data.answer || '';
         return (
           <div className="structured-response">
             <div className="structured-data-box">
@@ -184,16 +284,22 @@ export default function DashboardPage() {
               <div className="data-row"><strong>Health Condition:</strong> {data.health_condition || userData?.health_conditions || 'None'}</div>
               <div className="data-row"><strong>Diet Type:</strong> {data.diet_type || userData?.diet_type || 'N/A'}</div>
             </div>
-            <div className="structured-text" dangerouslySetInnerHTML={{ __html: (data.response || data.answer || '').replace(/\n/g, '<br/>') }} />
+            {responseContent && (
+              <div 
+                className="structured-text" 
+                dangerouslySetInnerHTML={{ __html: parseMarkdownToHtml(responseContent) }} 
+              />
+            )}
           </div>
         );
       } else {
-        // If it's JSON but only contains the response
-        return <div dangerouslySetInnerHTML={{ __html: (data.response || data.answer || cleanText).replace(/\n/g, '<br/>') }} />;
+        // If it's JSON but only contains the response or answer
+        const content = data.response || data.answer || cleanText;
+        return <div dangerouslySetInnerHTML={{ __html: parseMarkdownToHtml(content) }} />;
       }
     } catch (e) {
       // Fallback for plain text
-      return <div dangerouslySetInnerHTML={{ __html: text.replace(/\n/g, '<br/>') }} />;
+      return <div dangerouslySetInnerHTML={{ __html: parseMarkdownToHtml(text) }} />;
     }
   };
 
@@ -315,27 +421,25 @@ export default function DashboardPage() {
               </p>
 
               <div className="cards">
-                <div className="card">
-                  <div className="card-top" style={{ color: '#2e7d32' }}>
-                    <Thermometer size={20} />
+                {MATERNITY_INFO_CARDS.map((card) => (
+                  <div 
+                    key={card.id} 
+                    className="card"
+                    onClick={() => router.push(`/dashboard/info/${card.id}`)}
+                  >
+                    <div className="card-top" style={{ color: card.color }}>
+                      {card.iconName === 'Thermometer' && <Thermometer size={20} />}
+                      {card.iconName === 'Syringe' && <Syringe size={20} />}
+                      {card.iconName === 'Calendar' && <Calendar size={20} />}
+                    </div>
+                    <h3>{card.title}</h3>
+                    <p>
+                      {card.id === 'milestones' && userData?.pregnancy_week 
+                        ? `Week ${userData.pregnancy_week} scans and what to expect` 
+                        : card.subtitle}
+                    </p>
                   </div>
-                  <h3>Nausea Relief</h3>
-                  <p>Managing morning sickness safely</p>
-                </div>
-                <div className="card">
-                  <div className="card-top" style={{ color: '#1976d2' }}>
-                    <Syringe size={20} />
-                  </div>
-                  <h3>IVF Guidance</h3>
-                  <p>Specific care for IVF pregnancies</p>
-                </div>
-                <div className="card">
-                  <div className="card-top" style={{ color: '#673ab7' }}>
-                    <Calendar size={20} />
-                  </div>
-                  <h3>Milestones</h3>
-                  <p>{userData?.pregnancy_week ? `Week ${userData.pregnancy_week}` : 'Week 8'} scans and what to expect</p>
-                </div>
+                ))}
               </div>
 
               <div className="suggestions">
@@ -710,6 +814,86 @@ export default function DashboardPage() {
         .data-row strong {
           opacity: 0.8;
           min-width: 120px;
+        }
+
+        /* Structured Advice Styles */
+        .structured-advice-response {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+          width: 100%;
+        }
+
+        .advice-greeting {
+          font-size: 16px;
+          font-weight: 600;
+          color: var(--accent-primary);
+          line-height: 1.4;
+        }
+
+        .advice-body {
+          font-size: 15px;
+          line-height: 1.6;
+          color: var(--text-main);
+        }
+
+        .advice-body p {
+          margin-bottom: 12px;
+        }
+
+        .advice-body p:last-child {
+          margin-bottom: 0;
+        }
+
+        .advice-safety-card {
+          display: flex;
+          gap: 12px;
+          background: #fff5f5;
+          border-left: 4px solid #e53e3e;
+          border-radius: 8px;
+          padding: 14px 16px;
+          font-size: 14px;
+          color: #c53030;
+          line-height: 1.5;
+        }
+
+        .safety-icon {
+          font-size: 18px;
+          flex-shrink: 0;
+        }
+
+        .safety-content strong {
+          color: #9b2c2c;
+        }
+
+        .advice-sources {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 12px;
+          color: var(--text-muted);
+          border-top: 1px solid #f9eee9;
+          padding-top: 12px;
+          margin-top: 4px;
+        }
+
+        .sources-icon {
+          font-size: 14px;
+        }
+
+        .chat-list {
+          padding-left: 20px;
+          margin: 8px 0 12px;
+          list-style-type: disc;
+        }
+
+        .chat-list li {
+          margin-bottom: 6px;
+          color: var(--text-main);
+        }
+
+        .chat-list li:last-child {
+          margin-bottom: 0;
         }
 
         .chat-dock { padding: 0 48px 48px; background: linear-gradient(transparent, white 20%); }
